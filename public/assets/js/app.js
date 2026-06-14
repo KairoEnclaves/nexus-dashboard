@@ -398,28 +398,56 @@
   reloadTodos();
 
   /* ============================================================
-     FINANCE (demo → GoCardless Bank Account Data)
+     MARKETS — TradingView Advanced Chart + watchlist (interactive).
+     Symbols mirror Michel's Apple Stocks list; search/switch live
+     inside the widget. Theme follows the dashboard theme.
      ============================================================ */
-  api('/api/finance').then((f) => {
-    const box = $('#finance'); box.innerHTML = '';
-    const fmt = (n) => n.toLocaleString('nl-BE', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    box.appendChild(el('div', 'fin-top', `<span class="fin-bal">€${fmt(f.balance)}</span><span class="fin-cur">${esc(f.currency)} · NET</span>`));
-    const accts = el('div', 'fin-accts');
-    f.accounts.forEach((a) => accts.appendChild(el('div', 'fin-acct', `${esc(a.name)}<b>€${fmt(a.balance)}</b>`)));
-    box.appendChild(accts);
-    const pct = Math.min(100, (f.monthSpend / f.monthBudget) * 100);
-    box.appendChild(el('div', 'fin-acct', `Spent €${fmt(f.monthSpend)} / €${fmt(f.monthBudget)} this month`));
-    const track = el('div', 'bar-track'); track.appendChild(el('div', 'bar-fill')).style.width = pct + '%';
-    box.appendChild(track);
-    const cats = el('div', 'fin-cats');
-    const max = Math.max(...f.categories.map((c) => c.value));
-    f.categories.forEach((c) => {
-      const row = el('div', 'fin-cat');
-      row.innerHTML = `<span class="nm">${esc(c.name)}</span><span class="tr"><span class="bar-track"><span class="bar-fill" style="width:${(c.value / max) * 100}%"></span></span></span><span class="vl">€${c.value}</span>`;
-      cats.appendChild(row);
-    });
-    box.appendChild(cats);
-  });
+  (function initMarkets() {
+    const box = $('#markets'), badge = $('#mktBadge');
+    if (!box) return;
+    const WATCHLIST = ['TVC:DJI', 'NASDAQ:AAPL', 'NYSE:NKE', 'EURONEXT:ROU'];
+    const tvTheme = () => (document.body.getAttribute('data-theme') === 'white-gold' ? 'light' : 'dark');
+    function build() {
+      box.innerHTML = '';
+      const container = el('div', 'tradingview-widget-container');
+      container.style.cssText = 'height:100%;width:100%';
+      const widget = el('div', 'tradingview-widget-container__widget');
+      widget.style.cssText = 'height:100%;width:100%';
+      container.appendChild(widget);
+      box.appendChild(container);
+      const cfg = {
+        autosize: true,
+        symbol: 'NASDAQ:AAPL',
+        interval: 'D',
+        timezone: 'Europe/Brussels',
+        theme: tvTheme(),
+        style: '1',
+        locale: 'en',
+        withdateranges: true,
+        hide_side_toolbar: false,
+        allow_symbol_change: true,
+        watchlist: WATCHLIST,
+        details: false,
+        calendar: false,
+        support_host: 'https://www.tradingview.com',
+      };
+      const sc = document.createElement('script');
+      sc.type = 'text/javascript';
+      sc.async = true;
+      sc.src = 'https://s3.tradingview.com/external-embedding/embed-widget-advanced-chart.js';
+      sc.innerHTML = JSON.stringify(cfg);
+      container.appendChild(sc);
+      if (badge) { badge.className = 'badge live'; badge.textContent = 'TradingView'; }
+    }
+    build();
+    // Rebuild so the chart's light/dark matches the dashboard theme.
+    let lastTheme = document.body.getAttribute('data-theme');
+    const sel = $('#themeSelect');
+    if (sel) sel.addEventListener('change', () => setTimeout(() => {
+      const t = document.body.getAttribute('data-theme');
+      if (t !== lastTheme) { lastTheme = t; build(); }
+    }, 60));
+  })();
 
   /* ============================================================
      MAIL (demo → Microsoft Graph)

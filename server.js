@@ -163,7 +163,6 @@ app.get('/api/config', requireAuth, (req, res) => {
       professional: msConnected('professional'),
       personal: msConnected('personal'),
     },
-    tink: { configured: tinkConfigured(), connected: tinkConnected() },
   });
 });
 
@@ -995,118 +994,61 @@ app.post('/auth/tink/disconnect', requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 
-// Finance API — real data from Tink, fallback to demo
-app.get('/api/finance', requireAuth, async (req, res) => {
-  if (!tinkConfigured() || !tinkConnected()) {
-    return res.json({
-      ok: true,
-      demo: true,
-      configured: tinkConfigured(),
-      connected: tinkConnected(),
-      currency: 'EUR',
-      balance: 8421.57,
-      accounts: [
-        { name: 'Checking', balance: 3120.4 },
-        { name: 'Savings', balance: 5012.0 },
-        { name: 'Credit', balance: -289.17 },
-      ],
-      monthSpend: 1843.22,
-      monthBudget: 2500,
-      categories: [
-        { name: 'Groceries', value: 412 },
-        { name: 'Transport', value: 188 },
-        { name: 'Dining', value: 254 },
-        { name: 'Subscriptions', value: 96 },
-        { name: 'Home', value: 893 },
-      ],
-      trend: [220, 180, 90, 310, 140, 60, 210, 280, 120, 70, 160, 240, 90, 130],
-    });
-  }
-
+/* ============================================================
+ *  MARKETS — live quotes from Yahoo Finance's public chart feed.
+ *  Yahoo has no personal-account API, so this is a public-data
+ *  watchlist (not a private portfolio). Override the symbols with
+ *  STOCKS_WATCHLIST=AAPL,BTC-USD,... in .env.
+ * ============================================================ */
+// Mirrors Michel's Apple Stocks watchlist (read from the macOS Stocks app).
+// Live prices come from the public market feed; edit via STOCKS_WATCHLIST.
+const STOCK_GROUPS_DEFAULT = [
+  { name: 'Apple Stocks', symbols: ['^DJI', 'AAPL', 'NKE', 'ROU.BR'] },
+];
+function stockGroups() {
+  const custom = (process.env.STOCKS_WATCHLIST || '').trim();
+  if (custom) return [{ name: 'Watchlist', symbols: custom.split(',').map((s) => s.trim()).filter(Boolean) }];
+  return STOCK_GROUPS_DEFAULT;
+}
+async function yahooQuote(symbol) {
+  const url = 'https://query1.finance.yahoo.com/v8/finance/chart/' + encodeURIComponent(symbol) + '?range=1d&interval=15m';
+  const r = await fetch(url, { headers: { 'user-agent': 'Mozilla/5.0' } });
+  if (!r.ok) throw new Error('yahoo ' + r.status);
+  const j = await r.json();
+  const r0 = j?.chart?.result?.[0];
+  if (!r0 || !r0.meta) throw new Error('no data');
+  const m = r0.meta;
+  const prev = Number(m.chartPreviousClose ?? m.previousClose ?? m.regularMarketPrice);
+  const price = Number(m.regularMarketPrice ?? prev);
+  let series = (r0.indicators?.quote?.[0]?.close || []).filter((v) => v != null);
+  if (series.length > 32) { const step = Math.ceil(series.length / 32); series = series.filter((_, i) => i % step === 0); }
+  const change = price - prev;
+  return {
+    symbol: m.symbol || symbol,
+    name: m.shortName || m.longName || symbol,
+    price, change,
+    changePct: prev ? (change / prev) * 100 : 0,
+    currency: m.currency || 'USD',
+    series: series.length ? series : [price],
+  };
+}
+let stocksCache = { at: 0, data: null };
+app.get('/api/stocks', requireAuth, async (req, res) => {
   try {
-    const token = await tinkRefreshIfNeeded();
-    if (!token) return res.json({ ok: false, needsConnect: true, configured: true });
-
-    const headers = { authorization: `Bearer ${token}` };
-
-    // Fetch accounts + balances
-    const [accR, txR] = await Promise.all([
-      fetch('https://api.tink.com/data/v2/accounts', { headers }),
-      fetch('https://api.tink.com/data/v2/transactions?pageSize=200', { headers }),
-    ]);
-    const [accD, txD] = await Promise.all([accR.json(), txR.json()]);
-
-    const accounts = (accD.accounts || []).map((a) => ({
-      name: a.name || a.type || 'Account',
-      balance: a.balances?.available?.amount?.value?.unscaledValue
-        ? Number(a.balances.available.amount.value.unscaledValue) / Math.pow(10, a.balances.available.amount.value.scale || 2)
-        : 0,
-      currency: a.balances?.available?.amount?.currencyCode || 'EUR',
-    }));
-
-    const totalBalance = accounts.reduce((s, a) => s + a.balance, 0);
-
-    // Compute spending this calendar month from transactions
-    const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-    const txList = (txD.transactions || []);
-    const monthTx = txList.filter((t) => {
-      const ts = new Date(t.dates?.booked || t.dates?.value || 0).getTime();
-      return ts >= monthStart;
-    });
-
-    // Spending = negative transactions (debits)
-    const monthSpend = monthTx
-      .filter((t) => {
-        const v = Number(t.amount?.value?.unscaledValue || 0);
-        return v < 0;
-      })
-      .reduce((s, t) => {
-        const scale = t.amount?.value?.scale || 2;
-        return s + Math.abs(Number(t.amount.value.unscaledValue) / Math.pow(10, scale));
-      }, 0);
-
-    // Simple category grouping from Tink's category labels
-    const catMap = {};
-    for (const t of monthTx) {
-      if (Number(t.amount?.value?.unscaledValue || 0) >= 0) continue; // skip credits
-      const cat = t.categories?.pfm?.name || 'Other';
-      const scale = t.amount?.value?.scale || 2;
-      const amt = Math.abs(Number(t.amount.value.unscaledValue) / Math.pow(10, scale));
-      catMap[cat] = (catMap[cat] || 0) + amt;
-    }
-    const categories = Object.entries(catMap)
-      .map(([name, value]) => ({ name, value: Math.round(value) }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 6);
-
-    // 14-day spend trend
-    const trend = [];
-    for (let i = 13; i >= 0; i--) {
-      const d = new Date(); d.setDate(d.getDate() - i);
-      const dayStr = d.toISOString().slice(0, 10);
-      const daySpend = txList
-        .filter((t) => (t.dates?.booked || '').startsWith(dayStr) && Number(t.amount?.value?.unscaledValue || 0) < 0)
-        .reduce((s, t) => {
-          const scale = t.amount?.value?.scale || 2;
-          return s + Math.abs(Number(t.amount.value.unscaledValue) / Math.pow(10, scale));
-        }, 0);
-      trend.push(Math.round(daySpend));
-    }
-
-    res.json({
-      ok: true,
-      demo: false,
-      currency: accounts[0]?.currency || 'EUR',
-      balance: Math.round(totalBalance * 100) / 100,
-      accounts,
-      monthSpend: Math.round(monthSpend * 100) / 100,
-      monthBudget: 2500,
-      categories,
-      trend,
-    });
+    if (stocksCache.data && Date.now() - stocksCache.at < 30 * 1000) return res.json(stocksCache.data);
+    const groups = stockGroups();
+    const all = groups.flatMap((g) => g.symbols);
+    const settled = await Promise.allSettled(all.map((s) => yahooQuote(s)));
+    const bySym = {};
+    settled.forEach((r, i) => { if (r.status === 'fulfilled') bySym[all[i]] = r.value; });
+    const out = groups
+      .map((g) => ({ name: g.name, items: g.symbols.map((s) => bySym[s]).filter(Boolean) }))
+      .filter((g) => g.items.length);
+    const data = { ok: out.length > 0, asOf: new Date().toISOString(), groups: out };
+    stocksCache = { at: Date.now(), data };
+    res.json(data);
   } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+    res.json({ ok: false, error: e.message });
   }
 });
 
