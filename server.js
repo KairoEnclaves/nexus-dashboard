@@ -135,6 +135,15 @@ app.get('/api/me', (req, res) => {
   return res.status(401).json({ ok: false });
 });
 
+/* ---------- Tink config helpers (needed by /api/config below) ---------- */
+const TINK_EARLY = {
+  clientId: process.env.TINK_CLIENT_ID || '',
+  clientSecret: process.env.TINK_CLIENT_SECRET || '',
+};
+const tinkConfigured = () => !!(TINK_EARLY.clientId && TINK_EARLY.clientSecret);
+const TINK_FILE_EARLY = path.join(__dirname, 'data', 'tink.json');
+function tinkConnected() { try { return !!JSON.parse(require('fs').readFileSync(TINK_FILE_EARLY, 'utf8'))?.access_token; } catch { return false; } }
+
 /* ---------- which integrations are configured (drives widget UI) ---------- */
 app.get('/api/config', requireAuth, (req, res) => {
   res.json({
@@ -154,6 +163,7 @@ app.get('/api/config', requireAuth, (req, res) => {
       professional: msConnected('professional'),
       personal: msConnected('personal'),
     },
+    tink: { configured: tinkConfigured(), connected: tinkConnected() },
   });
 });
 
@@ -862,8 +872,7 @@ const TINK = {
   clientSecret: process.env.TINK_CLIENT_SECRET || '',
   redirectUri: process.env.TINK_REDIRECT_URI || `http://localhost:${PORT}/auth/tink/callback`,
 };
-const tinkConfigured = () => !!(TINK.clientId && TINK.clientSecret);
-const TINK_FILE = path.join(__dirname, 'data', 'tink.json');
+const TINK_FILE = TINK_FILE_EARLY; // alias — already declared above
 
 function tinkLoad() {
   try { return JSON.parse(fs.readFileSync(TINK_FILE, 'utf8')); } catch { return null; }
@@ -871,7 +880,6 @@ function tinkLoad() {
 function tinkSave(d) {
   try { fs.mkdirSync(path.dirname(TINK_FILE), { recursive: true }); fs.writeFileSync(TINK_FILE, JSON.stringify(d, null, 2)); } catch (e) { console.warn('tink token not persisted:', e.message); }
 }
-function tinkConnected() { return !!tinkLoad()?.access_token; }
 
 async function tinkClientToken() {
   const r = await fetch('https://api.tink.com/api/v1/oauth/token', {
