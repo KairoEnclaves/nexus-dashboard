@@ -430,10 +430,16 @@ function parseDt(val) {
 function durFrom(a, b) { if (!a || !b || !a.iso || !b.iso) return ''; const m = Math.round((new Date(b.iso) - new Date(a.iso)) / 60000); if (isNaN(m) || m <= 0) return ''; return m >= 60 ? `${Math.round(m / 60)}h` : `${m}m`; }
 function decodeXml(s) { return s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&'); }
 
+// Which reminder list the widget shows. Defaults to "To Do"; override with
+// ICLOUD_REMINDER_LIST in .env (set it to empty to show all lists).
+const ICLOUD_REMINDER_LIST = (process.env.ICLOUD_REMINDER_LIST ?? 'To Do').trim();
 async function icloudReminders() {
   const { calendars } = await icloudDiscover();
   const lists = [];
-  for (const cal of calendars.filter((c) => c.comps.includes('VTODO'))) {
+  const wanted = calendars
+    .filter((c) => c.comps.includes('VTODO'))
+    .filter((c) => !ICLOUD_REMINDER_LIST || c.name.trim().toLowerCase() === ICLOUD_REMINDER_LIST.toLowerCase());
+  for (const cal of wanted) {
     const body = '<?xml version="1.0"?><c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav"><d:prop><d:getetag/><c:calendar-data/></d:prop><c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VTODO"/></c:comp-filter></c:filter></c:calendar-query>';
     const r = await dav('REPORT', cal.url, body, 1);
     const responses = r.text.match(/<[^>]*:response>[\s\S]*?<\/[^>]*:response>/gi) || r.text.match(/<response>[\s\S]*?<\/response>/gi) || [];
