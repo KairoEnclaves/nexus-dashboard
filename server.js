@@ -102,6 +102,8 @@ function requireAuth(req, res, next) {
 /* ---------- static assets (css/js/img are public; pages are gated) ---------- */
 const PUB = path.join(__dirname, 'public');
 app.use('/assets', express.static(path.join(PUB, 'assets')));
+// Public favicon (must load on the login page too, so no auth gate).
+app.get('/favicon.svg', (req, res) => res.sendFile(path.join(PUB, 'favicon.svg')));
 
 /* ---------- page routes ---------- */
 app.get('/', (req, res) => {
