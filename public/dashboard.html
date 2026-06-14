@@ -30,6 +30,14 @@
         <div class="user" id="userEmail">—</div>
         <div class="date">OPERATOR</div>
       </div>
+      <div class="theme-pick" title="Switch theme">
+        <label for="themeSelect">THEME</label>
+        <select id="themeSelect">
+          <option value="tech">Tech</option>
+          <option value="white-gold">White Gold</option>
+          <option value="dark-classy">Dark Classy</option>
+        </select>
+      </div>
       <div class="logout" id="fullscreen" title="Toggle full screen">⛶ FULL</div>
       <div class="logout" id="logout">LOG OUT ▸</div>
     </header>
@@ -131,6 +139,13 @@
       <section class="panel viz c4 r2">
         <canvas data-viz="dataRain"></canvas>
         <span class="viz-label">DATASTREAM // 0xNEXUS</span>
+      </section>
+
+      <!-- Formula 1 -->
+      <section class="panel c12 r3" id="f1Panel">
+        <div class="panel-head"><span class="dot" style="background:var(--red);box-shadow:0 0 8px var(--red)"></span><h3>Formula 1</h3><span class="meta" id="f1Meta">live</span></div>
+        <div class="f1-tabs" id="f1Tabs"></div>
+        <div class="panel-body" id="f1Body"><div class="empty">Loading grid…</div></div>
       </section>
 
       <!-- Ukraine live front (bottom hero) -->

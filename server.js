@@ -40,12 +40,55 @@ const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toSt
 const app = express();
 app.disable('x-powered-by');
 app.use(express.json({ limit: '1mb' }));
+
+/* ---------- persistent session store ----------
+ * The default express-session MemoryStore is wiped every time the server
+ * restarts, which forced a fresh login (and made the mail/Spotify widgets
+ * look "logged out") on every restart. This tiny file-backed store keeps
+ * sessions on disk so logins survive restarts. No extra dependency. */
+const SESS_FILE = path.join(__dirname, 'data', 'sessions.json');
+class FileSessionStore extends session.Store {
+  constructor() {
+    super();
+    this.sessions = {};
+    try { this.sessions = JSON.parse(fs.readFileSync(SESS_FILE, 'utf8')); } catch (_) {}
+    this._dirty = false;
+    const timer = setInterval(() => this._flush(), 4000);
+    if (timer.unref) timer.unref();
+  }
+  _flush() {
+    if (!this._dirty) return;
+    this._dirty = false;
+    try { fs.mkdirSync(path.dirname(SESS_FILE), { recursive: true }); fs.writeFileSync(SESS_FILE, JSON.stringify(this.sessions)); }
+    catch (e) { console.warn('sessions not persisted:', e.message); }
+  }
+  get(sid, cb) {
+    const e = this.sessions[sid];
+    if (!e) return cb(null, null);
+    if (e.__expires && Date.now() > e.__expires) { delete this.sessions[sid]; this._dirty = true; return cb(null, null); }
+    cb(null, e.sess);
+  }
+  set(sid, sess, cb) {
+    const maxAge = sess.cookie && sess.cookie.maxAge;
+    this.sessions[sid] = { sess, __expires: maxAge ? Date.now() + maxAge : 0 };
+    this._dirty = true; cb && cb(null);
+  }
+  destroy(sid, cb) { delete this.sessions[sid]; this._dirty = true; cb && cb(null); }
+  touch(sid, sess, cb) {
+    const e = this.sessions[sid];
+    if (e) { const maxAge = sess.cookie && sess.cookie.maxAge; e.__expires = maxAge ? Date.now() + maxAge : 0; e.sess.cookie = sess.cookie; this._dirty = true; }
+    cb && cb(null);
+  }
+}
+
 app.use(
   session({
     name: 'nexus.sid',
     secret: SESSION_SECRET,
+    store: new FileSessionStore(),
     resave: false,
     saveUninitialized: false,
+    rolling: true, // refresh the 7-day window on every visit → stays logged in
     cookie: { httpOnly: true, sameSite: 'lax', maxAge: 1000 * 60 * 60 * 24 * 7 },
   })
 );
@@ -296,6 +339,15 @@ async function msEvents(slot, start, end) {
       dur, cal: slot === 'personal' ? 'outlook-personal' : 'outlook', location: e.location?.displayName || '',
     };
   });
+}
+async function msDeleteMail(slot, id) {
+  const at = await msAccessToken(slot);
+  if (!at) return false;
+  // Graph DELETE moves the message to the Deleted Items folder (recoverable).
+  const r = await fetch('https://graph.microsoft.com/v1.0/me/messages/' + encodeURIComponent(id), {
+    method: 'DELETE', headers: { authorization: `Bearer ${at}` },
+  });
+  return r.ok;
 }
 async function msSendReply(slot, to, subject, body) {
   const at = await msAccessToken(slot);
@@ -786,28 +838,268 @@ app.post('/api/mail/reply', requireAuth, async (req, res) => {
   res.json({ ok: true, demo: true, sent: { to, subject, body, at: new Date().toISOString() } });
 });
 
-app.get('/api/finance', requireAuth, (req, res) => {
-  res.json({
-    ok: true,
-    demo: true,
-    currency: 'EUR',
-    balance: 8421.57,
-    accounts: [
-      { name: 'Checking', balance: 3120.4 },
-      { name: 'Savings', balance: 5012.0 },
-      { name: 'Credit', balance: -289.17 },
-    ],
-    monthSpend: 1843.22,
-    monthBudget: 2500,
-    categories: [
-      { name: 'Groceries', value: 412 },
-      { name: 'Transport', value: 188 },
-      { name: 'Dining', value: 254 },
-      { name: 'Subscriptions', value: 96 },
-      { name: 'Home', value: 893 },
-    ],
-    trend: [220, 180, 90, 310, 140, 60, 210, 280, 120, 70, 160, 240, 90, 130],
+// Delete a message → real delete via Graph (moves to Deleted Items) when the
+// account is connected; demo mail just acks so the row disappears locally.
+app.post('/api/mail/delete', requireAuth, async (req, res) => {
+  const slot = msSlot(req.body.slot);
+  const id = req.body.id;
+  if (!id) return res.status(400).json({ ok: false, error: 'id required' });
+  if (msConnected(slot)) {
+    const ok = await msDeleteMail(slot, id);
+    return res.json({ ok, demo: false, error: ok ? undefined : 'Graph delete failed' });
+  }
+  res.json({ ok: true, demo: true });
+});
+
+/* ============================================================
+ *  TINK — Open Banking (balances + transactions via BNP etc.)
+ *  Register a sandbox app at console.tink.com, set:
+ *    TINK_CLIENT_ID, TINK_CLIENT_SECRET, TINK_REDIRECT_URI
+ *  Then click "Connect Bank" in the finance widget.
+ * ============================================================ */
+const TINK = {
+  clientId: process.env.TINK_CLIENT_ID || '',
+  clientSecret: process.env.TINK_CLIENT_SECRET || '',
+  redirectUri: process.env.TINK_REDIRECT_URI || `http://localhost:${PORT}/auth/tink/callback`,
+};
+const tinkConfigured = () => !!(TINK.clientId && TINK.clientSecret);
+const TINK_FILE = path.join(__dirname, 'data', 'tink.json');
+
+function tinkLoad() {
+  try { return JSON.parse(fs.readFileSync(TINK_FILE, 'utf8')); } catch { return null; }
+}
+function tinkSave(d) {
+  try { fs.mkdirSync(path.dirname(TINK_FILE), { recursive: true }); fs.writeFileSync(TINK_FILE, JSON.stringify(d, null, 2)); } catch (e) { console.warn('tink token not persisted:', e.message); }
+}
+function tinkConnected() { return !!tinkLoad()?.access_token; }
+
+async function tinkClientToken() {
+  const r = await fetch('https://api.tink.com/api/v1/oauth/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: TINK.clientId,
+      client_secret: TINK.clientSecret,
+      grant_type: 'client_credentials',
+      scope: 'authorization:grant',
+    }),
   });
+  const d = await r.json();
+  if (!d.access_token) throw new Error(d.error_description || 'Failed to get client token');
+  return d.access_token;
+}
+
+async function tinkRefreshIfNeeded() {
+  const stored = tinkLoad();
+  if (!stored?.refresh_token) return null;
+  // If access token still valid (with 60s buffer), return it
+  if (stored.access_token && stored.expires_at && Date.now() < stored.expires_at - 60000) {
+    return stored.access_token;
+  }
+  // Refresh
+  const r = await fetch('https://api.tink.com/api/v1/oauth/token', {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      client_id: TINK.clientId,
+      client_secret: TINK.clientSecret,
+      grant_type: 'refresh_token',
+      refresh_token: stored.refresh_token,
+    }),
+  });
+  const d = await r.json();
+  if (!d.access_token) return null;
+  tinkSave({ ...stored, access_token: d.access_token, expires_at: Date.now() + d.expires_in * 1000 });
+  return d.access_token;
+}
+
+// Step 1: initiate Tink Link flow
+app.get('/auth/tink/login', requireAuth, async (req, res) => {
+  if (!tinkConfigured()) return res.status(400).send('Tink not configured. Add TINK_CLIENT_ID / TINK_CLIENT_SECRET to environment.');
+  try {
+    // Get a client access token, then create an authorisation code for the user
+    const clientToken = await tinkClientToken();
+    // Create a user (idempotent — uses a stable external user id)
+    const userR = await fetch('https://api.tink.com/api/v1/user/create', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${clientToken}` },
+      body: JSON.stringify({ external_user_id: 'nexus-owner', market: 'BE', locale: 'en_US' }),
+    });
+    const userD = await userR.json();
+    if (!userR.ok && userD.errorCode !== 'USER_ALREADY_EXISTS') {
+      return res.status(500).send(`Failed to create Tink user: ${userD.message || JSON.stringify(userD)}`);
+    }
+    // Grant authorisation scopes to the user
+    const grantR = await fetch('https://api.tink.com/api/v1/oauth/authorization-grant/delegate', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', authorization: `Bearer ${clientToken}` },
+      body: new URLSearchParams({
+        response_type: 'code',
+        external_user_id: 'nexus-owner',
+        scope: 'accounts:read,balances:read,transactions:read,provider-consents:read',
+        id_hint: 'nexus-owner',
+        actor_client_id: 'df05e4b379934cd09963197cc855bfe9', // Tink Link client id (fixed)
+      }),
+    });
+    const grantD = await grantR.json();
+    if (!grantD.code) return res.status(500).send(`Failed to get auth grant: ${JSON.stringify(grantD)}`);
+
+    const tinkLinkUrl = 'https://link.tink.com/1.0/transactions/connect-accounts?' + new URLSearchParams({
+      client_id: TINK.clientId,
+      redirect_uri: TINK.redirectUri,
+      authorization_code: grantD.code,
+      market: 'BE',
+      locale: 'en_US',
+    });
+    res.redirect(tinkLinkUrl);
+  } catch (e) {
+    res.status(500).send(`Tink login error: ${e.message}`);
+  }
+});
+
+// Step 2: Tink redirects back here with ?code=
+app.get('/auth/tink/callback', requireAuth, async (req, res) => {
+  const { code, error } = req.query;
+  if (error) return res.send(`Tink error: ${error}. <a href="/">back</a>`);
+  if (!code) return res.send('No code returned from Tink. <a href="/">back</a>');
+  try {
+    const r = await fetch('https://api.tink.com/api/v1/oauth/token', {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        client_id: TINK.clientId,
+        client_secret: TINK.clientSecret,
+        grant_type: 'authorization_code',
+        code: String(code),
+      }),
+    });
+    const d = await r.json();
+    if (!d.access_token) return res.send(`Token exchange failed: ${d.error_description || JSON.stringify(d)}. <a href="/">back</a>`);
+    tinkSave({ access_token: d.access_token, refresh_token: d.refresh_token, expires_at: Date.now() + (d.expires_in || 3600) * 1000 });
+    res.redirect('/?tink=connected');
+  } catch (e) {
+    res.status(500).send(`Tink callback error: ${e.message}`);
+  }
+});
+
+app.post('/auth/tink/disconnect', requireAuth, (req, res) => {
+  try { fs.unlinkSync(TINK_FILE); } catch (_) {}
+  res.json({ ok: true });
+});
+
+// Finance API — real data from Tink, fallback to demo
+app.get('/api/finance', requireAuth, async (req, res) => {
+  if (!tinkConfigured() || !tinkConnected()) {
+    return res.json({
+      ok: true,
+      demo: true,
+      configured: tinkConfigured(),
+      connected: tinkConnected(),
+      currency: 'EUR',
+      balance: 8421.57,
+      accounts: [
+        { name: 'Checking', balance: 3120.4 },
+        { name: 'Savings', balance: 5012.0 },
+        { name: 'Credit', balance: -289.17 },
+      ],
+      monthSpend: 1843.22,
+      monthBudget: 2500,
+      categories: [
+        { name: 'Groceries', value: 412 },
+        { name: 'Transport', value: 188 },
+        { name: 'Dining', value: 254 },
+        { name: 'Subscriptions', value: 96 },
+        { name: 'Home', value: 893 },
+      ],
+      trend: [220, 180, 90, 310, 140, 60, 210, 280, 120, 70, 160, 240, 90, 130],
+    });
+  }
+
+  try {
+    const token = await tinkRefreshIfNeeded();
+    if (!token) return res.json({ ok: false, needsConnect: true, configured: true });
+
+    const headers = { authorization: `Bearer ${token}` };
+
+    // Fetch accounts + balances
+    const [accR, txR] = await Promise.all([
+      fetch('https://api.tink.com/data/v2/accounts', { headers }),
+      fetch('https://api.tink.com/data/v2/transactions?pageSize=200', { headers }),
+    ]);
+    const [accD, txD] = await Promise.all([accR.json(), txR.json()]);
+
+    const accounts = (accD.accounts || []).map((a) => ({
+      name: a.name || a.type || 'Account',
+      balance: a.balances?.available?.amount?.value?.unscaledValue
+        ? Number(a.balances.available.amount.value.unscaledValue) / Math.pow(10, a.balances.available.amount.value.scale || 2)
+        : 0,
+      currency: a.balances?.available?.amount?.currencyCode || 'EUR',
+    }));
+
+    const totalBalance = accounts.reduce((s, a) => s + a.balance, 0);
+
+    // Compute spending this calendar month from transactions
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
+    const txList = (txD.transactions || []);
+    const monthTx = txList.filter((t) => {
+      const ts = new Date(t.dates?.booked || t.dates?.value || 0).getTime();
+      return ts >= monthStart;
+    });
+
+    // Spending = negative transactions (debits)
+    const monthSpend = monthTx
+      .filter((t) => {
+        const v = Number(t.amount?.value?.unscaledValue || 0);
+        return v < 0;
+      })
+      .reduce((s, t) => {
+        const scale = t.amount?.value?.scale || 2;
+        return s + Math.abs(Number(t.amount.value.unscaledValue) / Math.pow(10, scale));
+      }, 0);
+
+    // Simple category grouping from Tink's category labels
+    const catMap = {};
+    for (const t of monthTx) {
+      if (Number(t.amount?.value?.unscaledValue || 0) >= 0) continue; // skip credits
+      const cat = t.categories?.pfm?.name || 'Other';
+      const scale = t.amount?.value?.scale || 2;
+      const amt = Math.abs(Number(t.amount.value.unscaledValue) / Math.pow(10, scale));
+      catMap[cat] = (catMap[cat] || 0) + amt;
+    }
+    const categories = Object.entries(catMap)
+      .map(([name, value]) => ({ name, value: Math.round(value) }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 6);
+
+    // 14-day spend trend
+    const trend = [];
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      const dayStr = d.toISOString().slice(0, 10);
+      const daySpend = txList
+        .filter((t) => (t.dates?.booked || '').startsWith(dayStr) && Number(t.amount?.value?.unscaledValue || 0) < 0)
+        .reduce((s, t) => {
+          const scale = t.amount?.value?.scale || 2;
+          return s + Math.abs(Number(t.amount.value.unscaledValue) / Math.pow(10, scale));
+        }, 0);
+      trend.push(Math.round(daySpend));
+    }
+
+    res.json({
+      ok: true,
+      demo: false,
+      currency: accounts[0]?.currency || 'EUR',
+      balance: Math.round(totalBalance * 100) / 100,
+      accounts,
+      monthSpend: Math.round(monthSpend * 100) / 100,
+      monthBudget: 2500,
+      categories,
+      trend,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
 });
 
 app.get('/api/traffic', requireAuth, (req, res) => {
@@ -936,11 +1228,118 @@ app.get('/api/spotify/playlists', requireAuth, async (req, res) => {
   if (!spotConnected()) return res.json({ ok: false, needsConnect: true, configured: spotifyConfigured() });
   const at = await spotToken();
   if (!at) return res.json({ ok: false, needsConnect: true, configured: spotifyConfigured() });
-  const r = await fetch('https://api.spotify.com/v1/me/playlists?limit=50', { headers: { authorization: `Bearer ${at}` } });
-  const d = await r.json();
-  if (!r.ok) return res.json({ ok: false, error: d.error?.message || 'spotify error' });
-  const playlists = (d.items || []).map((p) => ({ id: p.id, name: p.name, tracks: p.tracks?.total || 0, image: p.images?.[0]?.url || '' }));
+  // /me/playlists returns playlists you OWN *and* ones you FOLLOW (including
+  // saved Spotify-made playlists), but only 50 per page — so we follow the
+  // `next` cursor to gather them all instead of stopping at the first 50.
+  let me = null;
+  try { me = await (await fetch('https://api.spotify.com/v1/me', { headers: { authorization: `Bearer ${at}` } })).json(); } catch (_) {}
+  const items = [];
+  let url = 'https://api.spotify.com/v1/me/playlists?limit=50';
+  while (url) {
+    const r = await fetch(url, { headers: { authorization: `Bearer ${at}` } });
+    const d = await r.json();
+    if (!r.ok) return res.json({ ok: false, error: d.error?.message || 'spotify error' });
+    for (const p of (d.items || [])) if (p) items.push(p);
+    url = d.next || null;
+    if (items.length >= 500) break; // safety cap
+  }
+  // Owned playlists first, then followed (incl. Spotify-curated) ones.
+  const playlists = items
+    .map((p) => ({
+      id: p.id, name: p.name, tracks: p.tracks?.total || 0, image: p.images?.[0]?.url || '',
+      owner: p.owner?.display_name || '', mine: !!(me && p.owner && p.owner.id === me.id),
+    }))
+    .sort((a, b) => Number(b.mine) - Number(a.mine));
   res.json({ ok: true, playlists });
+});
+
+/* ============================================================
+ *  FORMULA 1 — schedule, results & standings (Jolpica / Ergast)
+ *  Free, no API key. Times come back in UTC (…Z); the browser
+ *  renders them in the operator's local timezone.
+ * ============================================================ */
+const F1_BASE = 'https://api.jolpi.ca/ergast/f1';
+const F1_WATCH_URL = process.env.F1_WATCH_URL || 'https://f1tv.formula1.com/';
+async function f1get(p) {
+  const r = await fetch(F1_BASE + p, { headers: { 'user-agent': 'NexusDashboard/1.0' } });
+  if (!r.ok) throw new Error('F1 API ' + r.status);
+  return r.json();
+}
+const f1iso = (s) => (s && s.date ? s.date + (s.time ? 'T' + s.time : 'T00:00:00Z') : null);
+let f1Cache = { at: 0, data: null };
+app.get('/api/f1', requireAuth, async (req, res) => {
+  try {
+    if (f1Cache.data && Date.now() - f1Cache.at < 90 * 1000) return res.json(f1Cache.data);
+    const [nextJ, lastJ, dsJ, csJ] = await Promise.all([
+      f1get('/current/next.json').catch(() => null),
+      f1get('/current/last/results.json').catch(() => null),
+      f1get('/current/driverStandings.json').catch(() => null),
+      f1get('/current/constructorStandings.json').catch(() => null),
+    ]);
+    const nr = nextJ?.MRData?.RaceTable?.Races?.[0] || null;
+    const lr = lastJ?.MRData?.RaceTable?.Races?.[0] || null;
+    const ds = dsJ?.MRData?.StandingsTable?.StandingsLists?.[0]?.DriverStandings || [];
+    const cs = csJ?.MRData?.StandingsTable?.StandingsLists?.[0]?.ConstructorStandings || [];
+
+    let weekend = false, quali = null, raceIso = null, sessions = [];
+    if (nr) {
+      raceIso = f1iso({ date: nr.date, time: nr.time });
+      const sessDefs = [
+        ['FP1', nr.FirstPractice], ['FP2', nr.SecondPractice], ['FP3', nr.ThirdPractice],
+        ['Sprint Quali', nr.SprintQualifying || nr.SprintShootout], ['Sprint', nr.Sprint],
+        ['Qualifying', nr.Qualifying], ['Race', { date: nr.date, time: nr.time }],
+      ];
+      sessions = sessDefs.filter(([, s]) => s && s.date).map(([label, s]) => ({ label, iso: f1iso(s) }));
+      const starts = sessions.map((s) => +new Date(s.iso)).filter((n) => !isNaN(n));
+      const earliest = starts.length ? Math.min(...starts) : (raceIso ? +new Date(raceIso) : 0);
+      const raceEnd = raceIso ? +new Date(raceIso) + 4 * 3600 * 1000 : 0;
+      const now = Date.now();
+      weekend = now >= earliest && (!raceEnd || now <= raceEnd);
+      if (weekend) {
+        try {
+          const qj = await f1get('/current/' + nr.round + '/qualifying.json');
+          const qr = qj?.MRData?.RaceTable?.Races?.[0];
+          if (qr?.QualifyingResults?.length) {
+            quali = qr.QualifyingResults.map((x) => ({
+              pos: +x.position, code: x.Driver.code || x.Driver.familyName,
+              driver: x.Driver.givenName + ' ' + x.Driver.familyName, team: x.Constructor.name,
+              best: x.Q3 || x.Q2 || x.Q1 || '',
+            }));
+          }
+        } catch (_) {}
+      }
+    }
+
+    const data = {
+      ok: true, weekend, watchUrl: F1_WATCH_URL, now: new Date().toISOString(),
+      next: nr && {
+        round: nr.round, name: nr.raceName, circuit: nr.Circuit.circuitName,
+        locality: nr.Circuit.Location.locality, country: nr.Circuit.Location.country,
+        raceIso, sessions,
+      },
+      quali,
+      last: lr && {
+        name: lr.raceName, country: lr.Circuit?.Location?.country || '', date: lr.date,
+        results: (lr.Results || []).slice(0, 20).map((x) => ({
+          pos: +x.position, code: x.Driver.code || x.Driver.familyName,
+          driver: x.Driver.givenName + ' ' + x.Driver.familyName, team: x.Constructor.name,
+          time: x.Time?.time || x.status, points: x.points,
+        })),
+      },
+      standings: {
+        drivers: ds.map((x) => ({
+          pos: +x.position, driver: x.Driver.givenName + ' ' + x.Driver.familyName,
+          code: x.Driver.code || x.Driver.familyName, points: x.points, wins: x.wins,
+          team: x.Constructors?.[0]?.name || '',
+        })),
+        constructors: cs.map((x) => ({ pos: +x.position, team: x.Constructor.name, points: x.points, wins: x.wins })),
+      },
+    };
+    f1Cache = { at: Date.now(), data };
+    res.json(data);
+  } catch (e) {
+    res.json({ ok: false, error: e.message });
+  }
 });
 
 /* ---------- fallback ---------- */

@@ -3,9 +3,18 @@
    All visuals are self-contained, DPR-aware, and resize-safe.
    ============================================================ */
 window.NexusVisuals = (function () {
-  const CYAN = '46,242,224';
-  const AMBER = '255,178,74';
-  const MAGENTA = '255,77,141';
+  // Mutable so themes can recolor the live canvases. Values are "r,g,b" strings.
+  let CYAN = '46,242,224';
+  let AMBER = '255,178,74';
+  let MAGENTA = '255,77,141';
+  function setTheme(c) {
+    if (!c) return;
+    if (c.cyan) CYAN = c.cyan;
+    if (c.amber) AMBER = c.amber;
+    if (c.magenta) MAGENTA = c.magenta;
+    COLORS.CYAN = CYAN; COLORS.AMBER = AMBER; COLORS.MAGENTA = MAGENTA;
+  }
+  const COLORS = { CYAN, AMBER, MAGENTA };
 
   function setup(canvas) {
     const ctx = canvas.getContext('2d');
@@ -258,5 +267,5 @@ window.NexusVisuals = (function () {
     new ResizeObserver(draw).observe(canvas);
   }
 
-  return { particleField, waveform, spectrum, neuralOrb, radar, dataRain, sparkline, COLORS: { CYAN, AMBER, MAGENTA } };
+  return { particleField, waveform, spectrum, neuralOrb, radar, dataRain, sparkline, COLORS, setTheme };
 })();

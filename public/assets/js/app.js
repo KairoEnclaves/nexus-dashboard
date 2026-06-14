@@ -11,6 +11,24 @@
     return r.json();
   };
 
+  /* ---------- theme switcher ---------- */
+  const THEME_VIZ = {
+    'tech':        { cyan: '46,242,224',  amber: '255,178,74',  magenta: '255,77,141' },
+    'white-gold':  { cyan: '184,146,60',  amber: '212,175,55',  magenta: '192,138,90' },
+    'dark-classy': { cyan: '201,162,110', amber: '224,184,122', magenta: '176,122,82' },
+  };
+  function applyTheme(name) {
+    if (!THEME_VIZ[name]) name = 'tech';
+    document.body.setAttribute('data-theme', name);
+    if (window.NexusVisuals && NexusVisuals.setTheme) NexusVisuals.setTheme(THEME_VIZ[name]);
+    try { localStorage.setItem('nexus.theme', name); } catch (_) {}
+    const sel = $('#themeSelect'); if (sel && sel.value !== name) sel.value = name;
+  }
+  let savedTheme = 'tech';
+  try { savedTheme = localStorage.getItem('nexus.theme') || 'tech'; } catch (_) {}
+  applyTheme(savedTheme);
+  { const sel = $('#themeSelect'); if (sel) sel.addEventListener('change', () => applyTheme(sel.value)); }
+
   /* ---------- background + visual canvases ---------- */
   NexusVisuals.particleField($('#bg-canvas'));
   document.querySelectorAll('canvas[data-viz]').forEach((c) => {
@@ -455,12 +473,28 @@
     (mailData[mailTab] || []).forEach((mail) => {
       const row = el('div', `mail ${mail.unread ? 'unread' : ''}`);
       row.innerHTML =
-        `<div class="row1"><span class="from">${esc(mail.from)}</span><span class="time">${esc(mail.time)}</span></div>
+        `<div class="row1"><span class="from">${esc(mail.from)}</span><span class="time">${esc(mail.time)}</span><span class="mail-del" title="Delete">✕</span></div>
          <div class="subj">${esc(mail.subject)}${mail.replied ? ' · <span style="color:var(--green)">replied</span>' : ''}</div>
          <div class="prev">${esc(mail.preview)}</div>`;
       row.addEventListener('click', () => { mail.unread = false; openMail(mail); renderMail(); });
+      row.querySelector('.mail-del').addEventListener('click', (e) => { e.stopPropagation(); deleteMail(mail); });
       listBox.appendChild(row);
     });
+  }
+  async function deleteMail(mail) {
+    const list = mailData[mailTab] || [];
+    const i = list.indexOf(mail);
+    if (i === -1) return;
+    list.splice(i, 1); // optimistic removal
+    renderMail();
+    try {
+      const r = await api('/api/mail/delete', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ slot: mailTab, id: mail.id }),
+      });
+      if (!r.ok) { list.splice(i, 0, mail); renderMail(); toast('Delete failed'); }
+      else toast(r.demo ? 'Removed (demo)' : 'Moved to Deleted Items');
+    } catch (_) { list.splice(i, 0, mail); renderMail(); toast('Delete failed'); }
   }
   api('/api/mail').then((m) => {
     mailData = m.accounts;
@@ -600,6 +634,94 @@
     box.innerHTML = `<div class="np"><div class="art"></div><div><div class="tn">Not connected</div><div class="an">Spotify</div></div></div>
       <div class="empty" style="margin-top:10px">Add a Spotify app (<code>SPOTIFY_CLIENT_ID</code>/<code>SECRET</code>) for the full playlist picker.</div>`;
   }
+
+  /* ============================================================
+     FORMULA 1 — schedule, results, standings + weekend mode
+     ============================================================ */
+  (function initF1() {
+    const tabsEl = $('#f1Tabs'), bodyEl = $('#f1Body'), metaEl = $('#f1Meta');
+    if (!tabsEl || !bodyEl) return;
+    let data = null, activeTab = null;
+    const fmt = (iso) => { const d = new Date(iso); return isNaN(d) ? '—' : d.toLocaleString('en-GB', { weekday: 'short', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }); };
+    function countdown(iso) {
+      const ms = new Date(iso) - Date.now();
+      if (isNaN(ms) || ms <= 0) return null;
+      const s = Math.floor(ms / 1000), d = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60), ss = s % 60;
+      if (d > 0) return `${d}d ${h}h ${m}m`;
+      if (h > 0) return `${h}h ${m}m ${ss}s`;
+      return `${m}m ${ss}s`;
+    }
+    function setTabs(names) {
+      tabsEl.innerHTML = '';
+      names.forEach((n) => {
+        const b = el('button', 'f1-tab' + (n === activeTab ? ' active' : ''), n);
+        b.addEventListener('click', () => { activeTab = n; render(); });
+        tabsEl.appendChild(b);
+      });
+    }
+    const rows = (arr) => '<div class="f1-table">' + arr.join('') + '</div>';
+    function viewWeekend() {
+      const n = data.next; if (!n) return '<div class="empty">No upcoming race.</div>';
+      const cd = countdown(n.raceIso);
+      const toRace = new Date(n.raceIso) - Date.now();
+      const raceEnded = Date.now() > new Date(n.raceIso).getTime() + 4 * 3600 * 1000;
+      const watchActive = toRace <= 10 * 60 * 1000 && !raceEnded;
+      let html = `<div class="f1-hero">
+        <div><div class="f1-race-name">${esc(n.name)}</div><div class="f1-sub">${esc(n.circuit)} · ${esc(n.locality)}, ${esc(n.country)}</div></div>
+        <div class="f1-when"><div class="f1-when-label">RACE · YOUR TIME</div><div class="f1-when-val">${fmt(n.raceIso)}</div>${cd ? `<div class="f1-cd">starts in ${cd}</div>` : '<div class="f1-cd live">● RACE UNDERWAY</div>'}</div>
+      </div>`;
+      if (watchActive) html += `<a class="f1-watch" href="${esc(data.watchUrl)}" target="_blank" rel="noopener">▶ WATCH RACE</a>`;
+      else if (!raceEnded) html += `<div class="f1-watch disabled">▶ Watch unlocks 10 min before lights out</div>`;
+      html += '<div class="f1-section-title">Qualifying</div>';
+      if (data.quali && data.quali.length) {
+        html += rows(data.quali.slice(0, 12).map((q) => `<div class="f1-row"><span class="f1-pos">${q.pos}</span><span class="f1-drv">${esc(q.driver)}</span><span class="f1-team">${esc(q.team)}</span><span class="f1-val">${esc(q.best)}</span></div>`));
+      } else html += '<div class="empty">Qualifying results not out yet — they appear here as soon as the session ends.</div>';
+      return html;
+    }
+    function viewNext() {
+      const n = data.next; if (!n) return '<div class="empty">No upcoming race.</div>';
+      const cd = countdown(n.raceIso);
+      let html = `<div class="f1-hero">
+        <div><div class="f1-race-name">${esc(n.name)}</div><div class="f1-sub">${esc(n.circuit)} · ${esc(n.locality)}, ${esc(n.country)}</div></div>
+        <div class="f1-when"><div class="f1-when-label">RACE · YOUR TIME</div><div class="f1-when-val">${fmt(n.raceIso)}</div>${cd ? `<div class="f1-cd">in ${cd}</div>` : ''}</div>
+      </div>`;
+      html += '<div class="f1-section-title">Weekend schedule · your local time</div>';
+      html += rows((n.sessions || []).map((s) => `<div class="f1-row"><span class="f1-drv">${esc(s.label)}</span><span class="f1-val wide">${fmt(s.iso)}</span></div>`));
+      return html;
+    }
+    function viewLast() {
+      const l = data.last; if (!l) return '<div class="empty">No recent results.</div>';
+      let html = `<div class="f1-section-title">${esc(l.name)} · ${esc(l.date)}</div>`;
+      html += rows(l.results.map((r) => `<div class="f1-row"><span class="f1-pos">${r.pos}</span><span class="f1-drv">${esc(r.driver)}</span><span class="f1-team">${esc(r.team)}</span><span class="f1-val">${esc(r.time)}</span><span class="f1-pts">${esc(r.points)}</span></div>`));
+      return html;
+    }
+    function viewChamp() {
+      const d = data.standings.drivers, c = data.standings.constructors;
+      const dr = '<div class="f1-col"><div class="f1-section-title">Drivers</div>' + rows(d.slice(0, 12).map((x) => `<div class="f1-row"><span class="f1-pos">${x.pos}</span><span class="f1-drv">${esc(x.driver)}</span><span class="f1-team">${esc(x.team)}</span><span class="f1-pts">${esc(x.points)}</span></div>`)) + '</div>';
+      const co = '<div class="f1-col"><div class="f1-section-title">Constructors</div>' + rows(c.slice(0, 12).map((x) => `<div class="f1-row"><span class="f1-pos">${x.pos}</span><span class="f1-drv">${esc(x.team)}</span><span class="f1-pts">${esc(x.points)}</span></div>`)) + '</div>';
+      return '<div class="f1-champ">' + dr + co + '</div>';
+    }
+    function render() {
+      if (!data || !data.ok) { bodyEl.innerHTML = '<div class="empty">F1 data unavailable.</div>'; tabsEl.innerHTML = ''; return; }
+      const tabs = data.weekend ? ['Weekend', 'Last GP', 'Championship'] : ['Up Next', 'Last GP', 'Championship'];
+      if (!tabs.includes(activeTab)) activeTab = tabs[0];
+      setTabs(tabs);
+      bodyEl.innerHTML = activeTab === 'Weekend' ? viewWeekend()
+        : activeTab === 'Up Next' ? viewNext()
+        : activeTab === 'Last GP' ? viewLast() : viewChamp();
+    }
+    function load() {
+      api('/api/f1').then((d) => {
+        data = d;
+        if (metaEl) metaEl.textContent = d.ok ? (d.weekend ? 'race weekend' : 'live') : 'offline';
+        render();
+      }).catch(() => { bodyEl.innerHTML = '<div class="empty">F1 error.</div>'; });
+    }
+    load();
+    setInterval(load, 90 * 1000);
+    // live countdown / watch-button unlock — refresh the time-sensitive views each second
+    setInterval(() => { if (data && data.ok && (activeTab === 'Weekend' || activeTab === 'Up Next')) render(); }, 1000);
+  })();
 
   /* ============================================================
      UKRAINE LIVE FRONT — Leaflet + DeepStateMAP + air alerts
