@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NEXUS // command deck</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
+  <link rel="stylesheet" href="/assets/css/style.css" />
+</head>
+<body>
+  <canvas id="bg-canvas"></canvas>
+
+  <div class="shell">
+    <!-- ── TOP BAR ── -->
+    <header class="topbar">
+      <div class="logo">NE<span>X</span>US</div>
+      <div class="sys">
+        <span>STATUS <b>ONLINE</b></span>
+        <span>SES <b id="sesId">····</b></span>
+        <span>LAT <b id="lat">12ms</b></span>
+      </div>
+      <div class="spacer"></div>
+      <div>
+        <div class="clock" id="clock">--:--:--</div>
+        <div class="date" id="date">—</div>
+      </div>
+      <div>
+        <div class="user" id="userEmail">—</div>
+        <div class="date">OPERATOR</div>
+      </div>
+      <div class="logout" id="fullscreen" title="Toggle full screen">⛶ FULL</div>
+      <div class="logout" id="logout">LOG OUT ▸</div>
+    </header>
+
+    <!-- ── BENTO GRID ── -->
+    <main class="grid">
+
+      <!-- System core -->
+      <section class="panel viz c3 r3">
+        <canvas data-viz="neuralOrb"></canvas>
+        <span class="viz-val" id="coreLoad">0%</span>
+        <span class="viz-label">COGNITIVE CORE · ACTIVE</span>
+      </section>
+
+      <!-- AI Console (live chat: Claude / ChatGPT / Perplexity / Gemini) -->
+      <section class="panel c6 r3" id="aiPanel">
+        <div class="panel-head">
+          <span class="dot"></span><h3>AI Console</h3>
+          <span class="meta" id="aiMeta">live</span>
+        </div>
+        <div class="ai-tabs" id="aiTabs"></div>
+        <div class="ai-log" id="aiLog"></div>
+        <form class="ai-input" id="aiForm">
+          <input id="aiInput" placeholder="ask…" autocomplete="off" />
+          <button type="button" id="aiOpen" title="Open in the web app — uses your subscription, no API cost">OPEN ↗</button>
+          <button type="submit" id="aiSend" title="Answer inline via API — metered/paid">SEND</button>
+        </form>
+        <div class="ai-hint" id="aiHint"></div>
+      </section>
+
+      <!-- News -->
+      <section class="panel c3 r3">
+        <div class="panel-head"><span class="dot"></span><h3>News Feed</h3><span class="meta" id="newsMeta">live</span></div>
+        <div class="panel-body" id="news"><div class="empty">Loading feed…</div></div>
+      </section>
+
+      <!-- Agenda -->
+      <section class="panel c4 r3">
+        <div class="panel-head"><span class="dot"></span><h3>Agenda</h3><span class="meta"><span class="badge demo" id="agendaBadge">demo</span></span></div>
+        <div class="agenda-modes" id="agendaModes"></div>
+        <div class="panel-body" id="agenda"></div>
+      </section>
+
+      <!-- To-Do -->
+      <section class="panel c4 r2">
+        <div class="panel-head"><span class="dot"></span><h3>Reminders</h3><span class="meta"><span class="badge demo" id="todoBadge">local</span></span></div>
+        <div class="panel-body" id="todos"></div>
+      </section>
+
+      <!-- Finance -->
+      <section class="panel c4 r2">
+        <div class="panel-head"><span class="dot"></span><h3>Finance</h3><span class="meta"><span class="badge demo">BNP · demo</span></span></div>
+        <div class="panel-body" id="finance"></div>
+      </section>
+
+      <!-- waveform viz -->
+      <section class="panel viz c4 r1">
+        <canvas data-viz="waveform"></canvas>
+        <span class="viz-label">SIGNAL · NET TRAFFIC</span>
+      </section>
+
+      <!-- Mail -->
+      <section class="panel c4 r2">
+        <div class="panel-head"><span class="dot"></span><h3>Outlook Mail</h3><span class="meta"><span class="badge demo">demo</span></span></div>
+        <div class="panel-body" id="mail"></div>
+      </section>
+
+      <!-- spectrum viz -->
+      <section class="panel viz c4 r1">
+        <canvas data-viz="spectrum"></canvas>
+        <span class="viz-label">SPECTRUM ANALYZER</span>
+      </section>
+
+      <!-- Website traffic -->
+      <section class="panel c5 r2">
+        <div class="panel-head"><span class="dot"></span><h3>Web Traffic</h3><span class="meta"><span class="badge demo">demo · 7d</span></span></div>
+        <div class="panel-body" id="traffic"></div>
+      </section>
+
+      <!-- radar viz -->
+      <section class="panel viz c3 r2">
+        <canvas data-viz="radar"></canvas>
+        <span class="viz-label">PERIMETER SCAN</span>
+      </section>
+
+      <!-- Goodreads -->
+      <section class="panel c4 r2">
+        <div class="panel-head"><span class="dot"></span><h3>Reading</h3><span class="meta"><span class="badge off" id="grBadge">Goodreads</span></span></div>
+        <div class="panel-body" id="goodreads"></div>
+      </section>
+
+      <!-- Spotify -->
+      <section class="panel c4 r2">
+        <div class="panel-head"><span class="dot"></span><h3>Spotify</h3><span class="meta"><span class="badge off" id="spBadge">embed</span></span></div>
+        <div class="panel-body" id="spotify"></div>
+      </section>
+
+      <!-- data rain viz -->
+      <section class="panel viz c4 r2">
+        <canvas data-viz="dataRain"></canvas>
+        <span class="viz-label">DATASTREAM // 0xNEXUS</span>
+      </section>
+
+      <!-- Ukraine live front (bottom hero) -->
+      <section class="panel c12 r3" id="warPanel">
+        <div class="panel-head"><span class="dot" style="background:var(--red);box-shadow:0 0 8px var(--red)"></span><h3>Ukraine — Live Front</h3><span class="meta" id="warMeta">DeepStateMAP</span></div>
+        <div class="war-stats" id="warStats"></div>
+        <div class="war-map" id="warMap"></div>
+        <div class="war-legend">
+          <span><i style="background:var(--red)"></i>Russian-controlled / contested</span>
+          <span><i style="background:var(--green)"></i>Retaken by Ukraine</span>
+          <span><i class="pulse" style="background:var(--amber)"></i>Active air alert</span>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+  <script src="/assets/js/visuals.js"></script>
+  <script src="/assets/js/app.js"></script>
+</body>
+</html>

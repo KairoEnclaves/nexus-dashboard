@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NEXUS // access</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/assets/css/style.css" />
+</head>
+<body>
+  <canvas id="bg-canvas"></canvas>
+  <div class="login-wrap">
+    <form class="login-card" id="loginForm" autocomplete="off">
+      <div class="brand">NEXUS<small>PERSONAL COMMAND DECK</small></div>
+      <h2>// AUTHENTICATION REQUIRED</h2>
+      <div class="field">
+        <label>Operator ID</label>
+        <input type="email" id="email" placeholder="you@example.com" required />
+      </div>
+      <div class="field">
+        <label>Passphrase</label>
+        <input type="password" id="password" placeholder="••••••••" required />
+      </div>
+      <button class="btn" type="submit">Authenticate ▸</button>
+      <div class="login-err" id="err"></div>
+      <div class="login-foot">
+        SECURE SESSION · BCRYPT · HTTP-ONLY COOKIE<br />
+        UNAUTHORIZED ACCESS IS LOGGED <span class="blink">_</span>
+      </div>
+    </form>
+  </div>
+
+  <script src="/assets/js/visuals.js"></script>
+  <script>
+    // background visual
+    NexusVisuals.particleField(document.getElementById('bg-canvas'));
+
+    const form = document.getElementById('loginForm');
+    const err = document.getElementById('err');
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      err.textContent = '';
+      const email = document.getElementById('email').value;
+      const password = document.getElementById('password').value;
+      try {
+        const r = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ email, password }),
+        });
+        const data = await r.json();
+        if (data.ok) {
+          location.href = '/';
+        } else {
+          err.textContent = '>_ ' + (data.error || 'Access denied');
+        }
+      } catch (_) {
+        err.textContent = '>_ Connection error';
+      }
+    });
+  </script>
+</body>
+</html>
