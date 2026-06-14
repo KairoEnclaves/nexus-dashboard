@@ -18,9 +18,6 @@ npm install
 npm start
 ```
 
-Open **http://localhost:3000** and log in with the credentials in your `.env`
-(defaults to `michel.bouckaert@hotmail.com` / `Bouckaert52`).
-
 > Requires Node 18+ (uses the built-in `fetch`). Tested on Node 22.
 
 ---
@@ -55,38 +52,6 @@ You don't have to choose globally — each provider tab offers both. Leave the A
 
 Each demo endpoint lives in `server.js` and is clearly marked — swap the demo
 payload for a real API call and the widget updates with no front-end changes.
-
----
-
-## `.env` reference
-
-```ini
-DASHBOARD_EMAIL=michel.bouckaert@hotmail.com
-DASHBOARD_PASSWORD=Bouckaert52        # change before hosting
-SESSION_SECRET=<long-random-string>   # change before hosting
-PORT=3000
-
-ANTHROPIC_API_KEY=        ANTHROPIC_MODEL=claude-sonnet-4-6
-OPENAI_API_KEY=           OPENAI_MODEL=gpt-4o-mini
-PERPLEXITY_API_KEY=       PERPLEXITY_MODEL=sonar
-GEMINI_API_KEY=           GEMINI_MODEL=gemini-1.5-flash
-
-NEWS_FEEDS=               # comma-separated RSS urls (optional)
-GOODREADS_RSS_URL=        # your currently-reading shelf RSS
-
-SPOTIFY_CLIENT_ID=        # full playlist picker (recommended)
-SPOTIFY_CLIENT_SECRET=
-SPOTIFY_REDIRECT_URI=http://localhost:3000/auth/spotify/callback
-SPOTIFY_EMBED_URI=        # OR just one fixed playlist link (no sign-in)
-
-MS_CLIENT_ID=             # Outlook mail + calendar (Microsoft Graph)
-MS_CLIENT_SECRET=
-MS_TENANT=common
-MS_REDIRECT_URI=http://localhost:3000/auth/ms/callback
-```
-
-The password is hashed with bcrypt **at boot** — it is never compared in
-plaintext. Sessions use an http-only cookie.
 
 ---
 
