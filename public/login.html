@@ -81,8 +81,35 @@
     @keyframes shake{ 0%,100%{ transform:translateX(0);} 25%{ transform:translateX(-7px);} 75%{ transform:translateX(7px);} }
     @keyframes warpzoom{ to{ transform:scale(1.6); opacity:0; filter:brightness(2.2); } }
     @keyframes flash{ 0%{ opacity:0;} 55%{ opacity:.85;} 100%{ opacity:0;} }
+    /* ===== Digital lock-pick (progresses as you type) ===== */
+    .lockpick{ margin:4px 0 14px; }
+    .lp-rail{ position:relative; height:46px; display:flex; align-items:flex-end; justify-content:center; gap:5px; padding:0 4px; }
+    .lp-shear{ position:absolute; left:6px; right:6px; top:19px; border-top:1px dashed rgba(46,242,224,0.35); pointer-events:none; }
+    .pin{ position:relative; width:8px; height:42px; border-radius:4px; background:rgba(46,242,224,0.05); border:1px solid rgba(46,242,224,0.12); overflow:hidden; }
+    .pin .seg{ position:absolute; left:1px; right:1px; top:2px; height:13px; border-radius:3px;
+      background:rgba(255,90,110,0.45); transition:top .26s cubic-bezier(.34,1.7,.5,1), background .2s, box-shadow .2s; }
+    .pin.set .seg{ top:17px; background:var(--cyan); box-shadow:0 0 8px rgba(46,242,224,0.85); }
+    .lp-meta{ display:flex; justify-content:space-between; font-family:var(--font-mono); font-size:10px; letter-spacing:2px; color:var(--text-faint); margin-top:8px; }
+    .lp-meta .lbl.armed{ color:var(--green); }
+    .lp-count{ color:var(--cyan-dim); }
+
+    /* ===== Lock-cylinder button ===== */
+    .lockbtn{ width:100%; margin-top:4px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:10px;
+      padding:13px; border-radius:8px; border:1px solid rgba(46,242,224,0.28);
+      background:linear-gradient(180deg, rgba(46,242,224,0.07), rgba(46,242,224,0.02));
+      color:var(--cyan-dim); font-family:var(--font-disp); letter-spacing:3px; font-size:13px; text-transform:uppercase; transition:all .25s; }
+    .lockbtn svg{ width:20px; height:20px; flex:none; }
+    .lockbtn .shackle{ transition:transform .35s cubic-bezier(.34,1.6,.5,1); transform-box:fill-box; transform-origin:82% 92%; }
+    .lockbtn.armed{ color:#eafdfd; border-color:var(--cyan);
+      background:linear-gradient(180deg, rgba(46,242,224,0.24), rgba(46,242,224,0.07));
+      box-shadow:0 0 18px rgba(46,242,224,0.35); animation:lockpulse 1.6s ease-in-out infinite; }
+    .lockbtn.armed .shackle{ transform:translateY(-3px) rotate(-22deg); }
+    .lockbtn:active{ transform:translateY(1px); }
+    @keyframes lockpulse{ 0%,100%{ box-shadow:0 0 13px rgba(46,242,224,0.26);} 50%{ box-shadow:0 0 26px rgba(46,242,224,0.55);} }
+
     @media (prefers-reduced-motion: reduce){
-      .ring-outer,.ring-mid,.core,.scan-sweep::before,.scan-sweep::after{ animation:none !important; }
+      .ring-outer,.ring-mid,.core,.scan-sweep::before,.scan-sweep::after,.lockbtn.armed{ animation:none !important; }
+      .pin .seg,.lockbtn .shackle{ transition:none !important; }
     }
   </style>
 </head>
@@ -100,7 +127,19 @@
         <label>Passphrase</label>
         <input type="password" id="password" placeholder="••••••••" required />
       </div>
-      <button class="btn" type="submit">Authenticate ▸</button>
+      <div class="lockpick">
+        <div class="lp-rail" id="pins"><div class="lp-shear"></div></div>
+        <div class="lp-meta"><span class="lbl" id="pickLbl">CYLINDER LOCKED</span><span class="lp-count" id="pickCount">0 / 12</span></div>
+      </div>
+      <button class="lockbtn" id="authBtn" type="submit">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="4" y="10.5" width="16" height="10.5" rx="2.5" fill="rgba(46,242,224,0.08)"/>
+          <path class="shackle" d="M8,10.5 V7.5 a4,4 0 0 1 8,0 V10.5"/>
+          <circle cx="12" cy="15.2" r="1.4" fill="currentColor" stroke="none"/>
+          <line x1="12" y1="15.2" x2="12" y2="18"/>
+        </svg>
+        <span id="btnTxt">CYLINDER LOCKED</span>
+      </button>
       <div class="login-err" id="err"></div>
       <div class="login-foot">
         SECURE SESSION · BCRYPT · HTTP-ONLY COOKIE<br />
@@ -143,6 +182,44 @@
   <script src="/assets/js/visuals.js"></script>
   <script>
     NexusVisuals.particleField(document.getElementById('bg-canvas'));
+
+    // ----- digital lock-pick: tumblers set as you type -----
+    (function () {
+      const TOTAL = 12;
+      const rail = document.getElementById('pins');
+      const pickLbl = document.getElementById('pickLbl');
+      const pickCount = document.getElementById('pickCount');
+      const authBtn = document.getElementById('authBtn');
+      const btnTxt = document.getElementById('btnTxt');
+      const emailI = document.getElementById('email');
+      const passI = document.getElementById('password');
+      const emailRe = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+      const pins = [];
+      for (let i = 0; i < TOTAL; i++) {
+        const p = document.createElement('div');
+        p.className = 'pin';
+        p.innerHTML = '<span class="seg"></span>';
+        rail.appendChild(p);
+        pins.push(p);
+      }
+      function update() {
+        const email = emailI.value.trim(), pass = passI.value;
+        const emailOk = emailRe.test(email);
+        const emailPart = emailOk ? 1 : Math.min(email.length / 10, 0.55);
+        const passPart = Math.min(pass.length / 8, 1);
+        const set = Math.round((0.5 * emailPart + 0.5 * passPart) * TOTAL);
+        pins.forEach((p, i) => p.classList.toggle('set', i < set));
+        pickCount.textContent = set + ' / ' + TOTAL;
+        const armed = emailOk && pass.length >= 4;
+        authBtn.classList.toggle('armed', armed);
+        pickLbl.textContent = armed ? 'CYLINDER PICKED' : 'CYLINDER LOCKED';
+        pickLbl.classList.toggle('armed', armed);
+        btnTxt.textContent = armed ? 'DISENGAGE LOCK ▸' : 'CYLINDER LOCKED';
+      }
+      emailI.addEventListener('input', update);
+      passI.addEventListener('input', update);
+      update();
+    })();
 
     const form = document.getElementById('loginForm');
     const err = document.getElementById('err');
