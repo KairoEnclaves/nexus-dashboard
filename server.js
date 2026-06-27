@@ -595,7 +595,8 @@ app.get('/api/icloud/test', requireAuth, async (req, res) => {
  *  NEWS — live RSS/Atom aggregation (no dependency parser)
  * ============================================================ */
 const DEFAULT_FEEDS = [
-  'https://www.tijd.be/rss/top_stories.xml',
+  // De Tijd's top_stories RSS only refreshes its lead item; the rest of the
+  // feed is stale (2022), so it's excluded to avoid years-old headlines.
   'https://www.knack.be/feed/',
   'https://trends.knack.be/feed/',
   'https://www.ft.com/rss/home',
@@ -605,7 +606,6 @@ const DEFAULT_FEEDS = [
 
 // friendly source labels for the feed hosts
 const SOURCE_LABELS = {
-  'tijd.be': 'De Tijd',
   'knack.be': 'Knack',
   'trends.knack.be': 'Trends',
   'ft.com': 'FT',
